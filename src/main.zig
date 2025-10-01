@@ -49,16 +49,16 @@ const event_t = extern struct {
 var state: State = undefined;
 
 // Called by Doom on startup; not needed in our case
-pub export fn DG_Init() callconv(.C) void {}
+pub export fn DG_Init() callconv(.c) void {}
 
 // Called by doomgeneric to draw a single frame
-pub export fn DG_DrawFrame() callconv(.C) void {
+pub export fn DG_DrawFrame() callconv(.c) void {
     // We need to have a window size before continuing
     const win = state.loop.vaxis.window();
     if (win.screen.width == 0) {
         while (state.loop.tryEvent()) |event| {
             switch (event) {
-                .winsize => |ws| state.loop.vaxis.resize(std.heap.c_allocator, state.loop.tty.anyWriter(), ws) catch unreachable,
+                .winsize => |ws| state.loop.vaxis.resize(std.heap.c_allocator, state.loop.tty.writer(), ws) catch unreachable,
                 else => {},
             }
         }
@@ -73,7 +73,7 @@ pub export fn DG_DrawFrame() callconv(.C) void {
     };
 
     // Write the image pixels using the Kitty image protocol
-    const img = state.loop.vaxis.transmitImage(std.heap.c_allocator, state.loop.tty.anyWriter(), &pixels, .rgb) catch unreachable;
+    const img = state.loop.vaxis.transmitImage(std.heap.c_allocator, state.loop.tty.writer(), &pixels, .rgb) catch unreachable;
 
     // Image size measured in cells
     const cell_size = img.cellSize(win) catch unreachable;
@@ -174,11 +174,11 @@ pub export fn DG_DrawFrame() callconv(.C) void {
                     D_PostEvent(&doom_event);
                 }
             },
-            .winsize => |ws| state.loop.vaxis.resize(std.heap.c_allocator, state.loop.tty.anyWriter(), ws) catch unreachable,
+            .winsize => |ws| state.loop.vaxis.resize(std.heap.c_allocator, state.loop.tty.writer(), ws) catch unreachable,
         }
     }
 
-    state.loop.vaxis.render(state.loop.tty.anyWriter()) catch unreachable;
+    state.loop.vaxis.render(state.loop.tty.writer()) catch unreachable;
 }
 
 fn accelerateMouse(delta: c_int, clamp: f32) c_int {
@@ -187,17 +187,17 @@ fn accelerateMouse(delta: c_int, clamp: f32) c_int {
 }
 
 /// Called by Doom when it needs to sleep
-pub export fn DG_SleepMs(ms: c_uint) callconv(.C) void {
-    std.time.sleep(ms * std.time.ns_per_ms);
+pub export fn DG_SleepMs(ms: c_uint) callconv(.c) void {
+    std.Thread.sleep(ms * std.time.ns_per_ms);
 }
 
 /// Called by Doom to get milliseconds passed since startup
-pub export fn DG_GetTicksMs() callconv(.C) u32 {
+pub export fn DG_GetTicksMs() callconv(.c) u32 {
     return @intCast(std.time.milliTimestamp() - state.startup);
 }
 
 /// Called by Doom to pull a keypress from the queue. Returns 0 if the queue is empty.
-pub export fn DG_GetKey(pressed: [*c]c_int, doom_key: [*c]u8) callconv(.C) c_int {
+pub export fn DG_GetKey(pressed: [*c]c_int, doom_key: [*c]u8) callconv(.c) c_int {
     if (state.key_queue_read_idx != state.key_queue_write_idx) {
         const key_data = state.key_queue[state.key_queue_read_idx];
         state.key_queue_read_idx +%= 1;
@@ -209,7 +209,7 @@ pub export fn DG_GetKey(pressed: [*c]c_int, doom_key: [*c]u8) callconv(.C) c_int
 }
 
 /// Called by Doom to set window title. Not used.
-pub export fn DG_SetWindowTitle(title: [*c]const u8) callconv(.C) void {
+pub export fn DG_SetWindowTitle(title: [*c]const u8) callconv(.c) void {
     _ = title;
 }
 
@@ -232,16 +232,20 @@ pub fn main() !void {
     // Use the C allocator for speed
     const alloc = std.heap.c_allocator;
     const envmap = try std.process.getEnvMap(alloc);
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
     if (envmap.get("TMUX")) |_| {
-        try std.io.getStdErr().writer().print("Terminal Doom can not run under tmux\n", .{});
+        try stderr.print("Terminal Doom can not run under tmux\n", .{});
         std.process.exit(1);
     }
 
-    var tty = try vaxis.Tty.init();
+    var tty_buffer: [1024]u8 = undefined;
+    var tty = try vaxis.Tty.init(&tty_buffer);
     defer tty.deinit();
 
     var vx = try vaxis.init(alloc, .{ .kitty_keyboard_flags = .{ .report_events = true } });
-    defer vx.deinit(alloc, tty.anyWriter());
+    defer vx.deinit(alloc, tty.writer());
 
     state = .{
         .key_queue = [_]u16{0} ** 32,
@@ -259,9 +263,9 @@ pub fn main() !void {
     try state.loop.start();
     defer state.loop.stop();
 
-    try vx.enterAltScreen(tty.anyWriter());
-    try vx.queryTerminal(tty.anyWriter(), 1 * std.time.ns_per_s);
-    try vx.setMouseMode(tty.anyWriter(), true);
+    try vx.enterAltScreen(tty.writer());
+    try vx.queryTerminal(tty.writer(), 1 * std.time.ns_per_s);
+    try vx.setMouseMode(tty.writer(), true);
 
     const args = try std.process.argsAlloc(alloc);
 
